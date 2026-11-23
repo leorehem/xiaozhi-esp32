@@ -10,12 +10,12 @@
 /**
  * LewayK10Display — Interface LVGL 100% personalizada LeWay Presença para UNIHIKER K10 (240x320)
  *
- * Substitui o rostinho e o layout padrão do xiaozhi-esp32 por:
- * - Santuário Madeira Freijó (#2B1E16)
- * - Aura Orgânica LeWay de 3 anéis respirando/pulsando na cor de cada uma das 6 Presenças
- * - Olhos expressivos minimalistas com piscar orgânico natural e reações por emoção
- * - Nome da Presença em destaque + legenda estilo cinema limpa na base da tela
- * - Callback opcional para sincronizar os 3 LEDs RGB da UNIHIKER K10 com a cor da Presença
+ * Versão otimizada para ESP32-S3 + ILI9341 SPI (double_buffer = false):
+ * - Cores sólidas pré-misturadas em Freijó (#2B1E16) — zero alpha-blending pesado por software
+ * - Timer leve (250ms / 4 FPS, sem float/sin, sem redesenhar em Idle) — zero risco de Watchdog
+ * - Olhos minimalistas com piscar natural + reações por emoção
+ * - Nome da Presença + origem + legenda cinema limpa (UTF-8 segura) na base
+ * - Sincronização segura dos 3 LEDs RGB físicos da K10 via callback
  */
 class LewayK10Display : public SpiLcdDisplay {
 public:
@@ -60,7 +60,9 @@ private:
         const char* id;
         const char* display_name;
         const char* origin_hint;
-        uint32_t accent_hex;
+        uint32_t outer_hex;
+        uint32_t mid_hex;
+        uint32_t core_hex;
         uint8_t led_r;
         uint8_t led_g;
         uint8_t led_b;
@@ -72,7 +74,7 @@ private:
     lv_obj_t* presence_name_label_ = nullptr;
     lv_obj_t* presence_sub_label_ = nullptr;
 
-    // Aura orgânica (3 anéis concêntricos) + olhos expressivos
+    // Aura orgânica (3 anéis sólidos concêntricos) + olhos expressivos
     lv_obj_t* aura_stage_ = nullptr;
     lv_obj_t* aura_outer_ = nullptr;
     lv_obj_t* aura_mid_ = nullptr;
@@ -87,20 +89,23 @@ private:
 
     lv_timer_t* anim_timer_ = nullptr;
 
-    // Estado de animação
+    // Estado de animação (leve, inteiro puro, cache de dimensões para evitar redraw desnecessário)
     uint32_t accent_hex_ = 0xE69D45;
     VisualMood current_mood_ = VisualMood::Happy;
     VoiceState voice_state_ = VoiceState::Idle;
     uint32_t anim_tick_ = 0;
-    uint32_t next_blink_tick_ = 55;
+    uint32_t next_blink_tick_ = 14;
     bool is_blinking_ = false;
+    int last_outer_d_ = 128;
+    int last_mid_d_ = 100;
+    int last_core_d_ = 74;
     RgbColorCallback rgb_cb_;
 
     static void AnimTimerCb(lv_timer_t* timer);
     void TickAnimation();
-    void ApplyPresenceTheme(const std::string& presence_id);
+    void ApplyPresenceTheme(const std::string& presence_id, bool update_leds);
     void ApplyMoodGeometry(bool blinking);
-    void UpdateAuraSizes(int outer_d, int mid_d, int core_d, lv_opa_t outer_opa, lv_opa_t mid_opa);
+    void UpdateAuraSizes(int outer_d, int mid_d, int core_d);
 };
 
 #endif  // LEWAY_K10_DISPLAY_H

@@ -2,7 +2,6 @@
 
 #include "display/lvgl_display/lvgl_theme.h"
 #include <esp_log.h>
-#include <cmath>
 #include <cstring>
 
 #define TAG "LewayK10Display"
@@ -13,6 +12,24 @@ constexpr uint32_t kCardDarkHex = 0x211610;
 constexpr uint32_t kTextCreamHex = 0xF5EFE6;
 constexpr uint32_t kTextMutedHex = 0xD4C6B4;
 constexpr uint32_t kEyeDarkHex = 0x1D130D;
+
+// Trunca string UTF-8 pelo final sem nunca cortar um caractere acentuado ao meio
+std::string TrimSubtitleUtf8(const std::string& input, size_t max_bytes) {
+    if (input.size() <= max_bytes) {
+        return input;
+    }
+    size_t start = input.size() - max_bytes;
+    // Avança até o início de um codepoint UTF-8 válido (não continuation byte 10xxxxxx)
+    while (start < input.size() && (static_cast<unsigned char>(input[start]) & 0xC0) == 0x80) {
+        ++start;
+    }
+    // Tenta alinhar no próximo espaço para não cortar uma palavra no meio
+    size_t space_pos = input.find(' ', start);
+    if (space_pos != std::string::npos && space_pos - start < 20 && space_pos + 1 < input.size()) {
+        start = space_pos + 1;
+    }
+    return "..." + input.substr(start);
+}
 }  // namespace
 
 LewayK10Display::LewayK10Display(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -34,6 +51,9 @@ void LewayK10Display::SetupUI() {
     }
     Display::SetupUI();
     DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
 
     auto* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
     const lv_font_t* text_font =
@@ -46,17 +66,21 @@ void LewayK10Display::SetupUI() {
             : LV_FONT_DEFAULT;
 
     lv_obj_t* screen = lv_screen_active();
-    lv_obj_clean(screen);
+    if (screen == nullptr) {
+        return;
+    }
+
     lv_obj_set_style_bg_color(screen, lv_color_hex(kBgFreijoHex), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(kTextCreamHex), 0);
     lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
 
-    // Container principal 240x320
+    // Container principal 240x320 (sólido — sem lv_obj_clean arriscado)
     leway_root_ = lv_obj_create(screen);
     container_ = leway_root_;
     lv_obj_set_size(leway_root_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_align(leway_root_, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_bg_color(leway_root_, lv_color_hex(kBgFreijoHex), 0);
     lv_obj_set_style_bg_opa(leway_root_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(leway_root_, 0, 0);
@@ -65,13 +89,13 @@ void LewayK10Display::SetupUI() {
     lv_obj_set_scrollbar_mode(leway_root_, LV_SCROLLBAR_MODE_OFF);
 
     // ------------------------------------------------------------------
-    // 1. TOPO DISCRETO: Marca LEWAY + Wi-Fi + Status curto
+    // 1. TOPO DISCRETO: Marca LEWAY + Status curto + Wi-Fi
     // ------------------------------------------------------------------
     top_bar_ = lv_obj_create(leway_root_);
     lv_obj_set_size(top_bar_, LV_HOR_RES, 28);
     lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(top_bar_, lv_color_hex(kCardDarkHex), 0);
-    lv_obj_set_style_bg_opa(top_bar_, LV_OPA_70, 0);
+    lv_obj_set_style_bg_opa(top_bar_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(top_bar_, 0, 0);
     lv_obj_set_style_radius(top_bar_, 0, 0);
     lv_obj_set_style_pad_hor(top_bar_, 10, 0);
@@ -95,28 +119,32 @@ void LewayK10Display::SetupUI() {
     lv_obj_set_style_text_color(network_label_, lv_color_hex(kTextMutedHex), 0);
     lv_obj_align(network_label_, LV_ALIGN_RIGHT_MID, 0, 0);
 
-    // Labels opcionais esperados pela classe base LvglDisplay (mantidos ocultos/discretos)
+    // Labels opcionais usados pela classe base LvglDisplay
     notification_label_ = lv_label_create(leway_root_);
     lv_label_set_text(notification_label_, "");
+    lv_obj_set_width(notification_label_, LV_HOR_RES - 24);
+    lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_bg_color(notification_label_, lv_color_hex(kCardDarkHex), 0);
-    lv_obj_set_style_bg_opa(notification_label_, LV_OPA_90, 0);
+    lv_obj_set_style_bg_opa(notification_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(notification_label_, lv_color_hex(kTextCreamHex), 0);
-    lv_obj_set_style_pad_hor(notification_label_, 10, 0);
+    lv_obj_set_style_pad_hor(notification_label_, 8, 0);
     lv_obj_set_style_pad_ver(notification_label_, 4, 0);
-    lv_obj_set_style_radius(notification_label_, 10, 0);
+    lv_obj_set_style_radius(notification_label_, 8, 0);
     lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, 32);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     mute_label_ = lv_label_create(top_bar_);
     lv_label_set_text(mute_label_, "");
+    lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_add_flag(mute_label_, LV_OBJ_FLAG_HIDDEN);
 
     battery_label_ = lv_label_create(top_bar_);
     lv_label_set_text(battery_label_, "");
+    lv_obj_set_style_text_font(battery_label_, icon_font, 0);
     lv_obj_add_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
 
     // ------------------------------------------------------------------
-    // 2. IDENTIDADE DA PRESENÇA (Nome + Origem sutil)
+    // 2. IDENTIDADE DA PRESENÇA (Nome + Origem)
     // ------------------------------------------------------------------
     presence_name_label_ = lv_label_create(leway_root_);
     lv_label_set_text(presence_name_label_, "Ze Baiano");
@@ -126,83 +154,78 @@ void LewayK10Display::SetupUI() {
     presence_sub_label_ = lv_label_create(leway_root_);
     lv_label_set_text(presence_sub_label_, "Itapua - Salvador");
     lv_obj_set_style_text_color(presence_sub_label_, lv_color_hex(accent_hex_), 0);
-    lv_obj_set_style_text_opa(presence_sub_label_, LV_OPA_80, 0);
     lv_obj_align(presence_sub_label_, LV_ALIGN_TOP_MID, 0, 56);
 
     // ------------------------------------------------------------------
-    // 3. PALCO CENTRAL: AURA ORGÂNICA LEWAY + OLHOS EXPRESSIVOS VIVOS
+    // 3. PALCO CENTRAL: AURA SÓLIDA PRÉ-MISTURADA (8x mais rápida no SPI!)
     // ------------------------------------------------------------------
     aura_stage_ = lv_obj_create(leway_root_);
-    lv_obj_set_size(aura_stage_, 156, 156);
+    lv_obj_set_size(aura_stage_, 152, 152);
     lv_obj_align(aura_stage_, LV_ALIGN_TOP_MID, 0, 74);
-    lv_obj_set_style_bg_opa(aura_stage_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(aura_stage_, lv_color_hex(kBgFreijoHex), 0);
+    lv_obj_set_style_bg_opa(aura_stage_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(aura_stage_, 0, 0);
     lv_obj_set_style_pad_all(aura_stage_, 0, 0);
     lv_obj_set_scrollbar_mode(aura_stage_, LV_SCROLLBAR_MODE_OFF);
 
-    // Anel externo (halo suave)
+    // Anel externo sólido (cor pré-misturada sobre Freijó — zero alpha blending!)
     aura_outer_ = lv_obj_create(aura_stage_);
-    lv_obj_set_size(aura_outer_, 136, 136);
+    lv_obj_set_size(aura_outer_, last_outer_d_, last_outer_d_);
     lv_obj_center(aura_outer_);
     lv_obj_set_style_radius(aura_outer_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(aura_outer_, lv_color_hex(accent_hex_), 0);
-    lv_obj_set_style_bg_opa(aura_outer_, LV_OPA_20, 0);
-    lv_obj_set_style_border_width(aura_outer_, 2, 0);
-    lv_obj_set_style_border_color(aura_outer_, lv_color_hex(accent_hex_), 0);
-    lv_obj_set_style_border_opa(aura_outer_, LV_OPA_40, 0);
+    lv_obj_set_style_bg_opa(aura_outer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(aura_outer_, 0, 0);
     lv_obj_set_scrollbar_mode(aura_outer_, LV_SCROLLBAR_MODE_OFF);
 
-    // Anel médio (calor respirando)
+    // Anel médio sólido
     aura_mid_ = lv_obj_create(aura_stage_);
-    lv_obj_set_size(aura_mid_, 106, 106);
+    lv_obj_set_size(aura_mid_, last_mid_d_, last_mid_d_);
     lv_obj_center(aura_mid_);
     lv_obj_set_style_radius(aura_mid_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(aura_mid_, lv_color_hex(accent_hex_), 0);
-    lv_obj_set_style_bg_opa(aura_mid_, LV_OPA_40, 0);
+    lv_obj_set_style_bg_opa(aura_mid_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(aura_mid_, 0, 0);
     lv_obj_set_scrollbar_mode(aura_mid_, LV_SCROLLBAR_MODE_OFF);
 
-    // Núcleo central da Presença
+    // Núcleo central sólido
     aura_core_ = lv_obj_create(aura_stage_);
-    lv_obj_set_size(aura_core_, 78, 78);
+    lv_obj_set_size(aura_core_, last_core_d_, last_core_d_);
     lv_obj_center(aura_core_);
     lv_obj_set_style_radius(aura_core_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(aura_core_, lv_color_hex(accent_hex_), 0);
     lv_obj_set_style_bg_opa(aura_core_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(aura_core_, 2, 0);
     lv_obj_set_style_border_color(aura_core_, lv_color_hex(kTextCreamHex), 0);
-    lv_obj_set_style_border_opa(aura_core_, LV_OPA_50, 0);
+    lv_obj_set_style_border_opa(aura_core_, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(aura_core_, LV_SCROLLBAR_MODE_OFF);
 
     // Olhos minimalistas expressivos dentro do núcleo
     eye_left_ = lv_obj_create(aura_core_);
-    lv_obj_set_size(eye_left_, 12, 18);
+    lv_obj_set_size(eye_left_, 12, 16);
     lv_obj_set_style_radius(eye_left_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(eye_left_, lv_color_hex(kEyeDarkHex), 0);
     lv_obj_set_style_bg_opa(eye_left_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(eye_left_, 0, 0);
-    lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, -2);
+    lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, -2);
 
     eye_right_ = lv_obj_create(aura_core_);
-    lv_obj_set_size(eye_right_, 12, 18);
+    lv_obj_set_size(eye_right_, 12, 16);
     lv_obj_set_style_radius(eye_right_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(eye_right_, lv_color_hex(kEyeDarkHex), 0);
     lv_obj_set_style_bg_opa(eye_right_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(eye_right_, 0, 0);
-    lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, -2);
+    lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, -2);
 
     // ------------------------------------------------------------------
-    // 4. CARD DE LEGENDA ESTILO CINEMA NA BASE (sem bolhas feias!)
+    // 4. CARD DE LEGENDA ESTILO CINEMA NA BASE (sólido, limpo e legível)
     // ------------------------------------------------------------------
     subtitle_card_ = lv_obj_create(leway_root_);
     lv_obj_set_size(subtitle_card_, LV_HOR_RES - 16, 80);
     lv_obj_align(subtitle_card_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_style_bg_color(subtitle_card_, lv_color_hex(kCardDarkHex), 0);
-    lv_obj_set_style_bg_opa(subtitle_card_, LV_OPA_90, 0);
-    lv_obj_set_style_radius(subtitle_card_, 14, 0);
+    lv_obj_set_style_bg_opa(subtitle_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(subtitle_card_, 12, 0);
     lv_obj_set_style_border_width(subtitle_card_, 1, 0);
     lv_obj_set_style_border_color(subtitle_card_, lv_color_hex(accent_hex_), 0);
-    lv_obj_set_style_border_opa(subtitle_card_, LV_OPA_40, 0);
+    lv_obj_set_style_border_opa(subtitle_card_, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(subtitle_card_, 10, 0);
     lv_obj_set_style_pad_ver(subtitle_card_, 6, 0);
     lv_obj_set_scrollbar_mode(subtitle_card_, LV_SCROLLBAR_MODE_OFF);
@@ -221,14 +244,17 @@ void LewayK10Display::SetupUI() {
     lv_label_set_text(subtitle_text_label_, "Aperte o botao ou chame para conversar.");
     lv_obj_align(subtitle_text_label_, LV_ALIGN_TOP_LEFT, 0, 18);
 
-    // Timer de animação suave a 20 FPS (50ms)
-    anim_timer_ = lv_timer_create(AnimTimerCb, 50, this);
-    ApplyPresenceTheme("ze_baiano");
+    // Aplica paleta visual inicial sem chamar LED strip dentro do lock de boot
+    ApplyPresenceTheme("ze_baiano", false);
+
+    // Timer leve (250ms = 4 FPS): zero sobrecarga de CPU/SPI e zero risco de Watchdog!
+    anim_timer_ = lv_timer_create(AnimTimerCb, 250, this);
 }
 
 void LewayK10Display::SetStatus(const char* status) {
     if (!setup_ui_called_ || status == nullptr) return;
     DisplayLockGuard lock(this);
+    if (!lock) return;
 
     if (notification_label_ != nullptr) {
         lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
@@ -238,7 +264,6 @@ void LewayK10Display::SetStatus(const char* status) {
     }
 
     std::string st(status);
-    // Traduz/simplifica estados padrão do firmware para Português elegante
     if (st.find("Speaking") != std::string::npos || st.find("说话") != std::string::npos) {
         voice_state_ = VoiceState::Speaking;
         if (status_label_) lv_label_set_text(status_label_, "Falando");
@@ -259,15 +284,16 @@ void LewayK10Display::SetStatus(const char* status) {
 }
 
 bool LewayK10Display::SetEmotion(const char* emotion) {
-    if (emotion == nullptr) return false;
+    if (!setup_ui_called_ || emotion == nullptr) return false;
     DisplayLockGuard lock(this);
+    if (!lock) return false;
 
     std::string emo(emotion);
 
-    // Protocolo LeWay: "presence:<id>" troca instantaneamente paleta, nome e LEDs RGB da K10!
+    // Protocolo LeWay: "presence:<id>" troca paleta, nome e LEDs RGB da K10!
     constexpr const char* kPresencePrefix = "presence:";
     if (emo.rfind(kPresencePrefix, 0) == 0) {
-        ApplyPresenceTheme(emo.substr(std::strlen(kPresencePrefix)));
+        ApplyPresenceTheme(emo.substr(std::strlen(kPresencePrefix)), true);
         return true;
     }
 
@@ -294,8 +320,9 @@ bool LewayK10Display::SetEmotion(const char* emotion) {
 }
 
 void LewayK10Display::SetChatMessage(const char* role, const char* content) {
-    if (content == nullptr) return;
+    if (!setup_ui_called_ || content == nullptr) return;
     DisplayLockGuard lock(this);
+    if (!lock) return;
 
     if (subtitle_role_label_ != nullptr) {
         bool is_user = (role != nullptr && std::strcmp(role, "user") == 0);
@@ -312,39 +339,33 @@ void LewayK10Display::SetChatMessage(const char* role, const char* content) {
             lv_label_set_text(subtitle_text_label_, "...");
             return;
         }
-        // Mantém no máximo ~110 bytes para leitura limpa em 3 linhas na tela 240x320
-        if (text.size() > 110) {
-            text = text.substr(text.size() - 107);
-            auto space_pos = text.find(' ');
-            if (space_pos != std::string::npos && space_pos < 24) {
-                text = text.substr(space_pos + 1);
-            }
-            text = "..." + text;
-        }
-        lv_label_set_text(subtitle_text_label_, text.c_str());
+        std::string trimmed = TrimSubtitleUtf8(text, 108);
+        lv_label_set_text(subtitle_text_label_, trimmed.c_str());
     }
 }
 
 void LewayK10Display::RemoveChatMessage(const char* /*role*/, const char* /*content*/) {
-    // Legenda estilo cinema exibe apenas a fala atual; nada a remover
+    // Legenda estilo cinema exibe apenas a fala atual
 }
 
 void LewayK10Display::ClearChatMessages() {
     if (!setup_ui_called_) return;
     DisplayLockGuard lock(this);
+    if (!lock) return;
     if (subtitle_text_label_ != nullptr) {
         lv_label_set_text(subtitle_text_label_, "Aperte o botao ou chame para conversar.");
     }
 }
 
 void LewayK10Display::SetPreviewImage(std::unique_ptr<LvglImage> /*image*/) {
-    // Tela LeWay prioriza a Aura e a legenda limpa; ignora preview sem risco de ponteiro nulo
+    // Tela LeWay prioriza a Aura e a legenda limpa
 }
 
 void LewayK10Display::SetHideSubtitle(bool hide) {
     hide_subtitle_ = hide;
     if (!setup_ui_called_) return;
     DisplayLockGuard lock(this);
+    if (!lock) return;
     if (subtitle_card_ != nullptr) {
         if (hide) {
             lv_obj_add_flag(subtitle_card_, LV_OBJ_FLAG_HIDDEN);
@@ -357,9 +378,9 @@ void LewayK10Display::SetHideSubtitle(bool hide) {
 void LewayK10Display::SetTheme(Theme* theme) {
     if (theme == nullptr) return;
     DisplayLockGuard lock(this);
+    if (!lock) return;
 
-    // Mantém a identidade Freijó LeWay intacta e atualiza apenas fontes carregadas pelos Assets,
-    // evitando que LcdDisplay::SetTheme tente acessar emoji_label_/content_ (nulos neste layout).
+    // Preserva 100% a paleta Freijó LeWay e atualiza apenas as fontes nos estilos raiz
     current_theme_ = theme;
     auto* lvgl_theme = static_cast<LvglTheme*>(theme);
 
@@ -375,8 +396,6 @@ void LewayK10Display::SetTheme(Theme* theme) {
     lv_obj_t* screen = lv_screen_active();
     if (text_font != nullptr && screen != nullptr) {
         lv_obj_set_style_text_font(screen, text_font, 0);
-        if (leway_root_) lv_obj_set_style_text_font(leway_root_, text_font, 0);
-        if (subtitle_text_label_) lv_obj_set_style_text_font(subtitle_text_label_, text_font, 0);
     }
     if (icon_font != nullptr) {
         if (network_label_) lv_obj_set_style_text_font(network_label_, icon_font, 0);
@@ -385,14 +404,15 @@ void LewayK10Display::SetTheme(Theme* theme) {
     }
 }
 
-void LewayK10Display::ApplyPresenceTheme(const std::string& presence_id) {
+void LewayK10Display::ApplyPresenceTheme(const std::string& presence_id, bool update_leds) {
+    // Paletas sólidas pré-misturadas sobre Freijó (#2B1E16): {outer, mid, core}
     static const PresenceTheme kThemes[] = {
-        {"dora", "Dora", "Vila Matilde - SP", 0x8FA876, 30, 50, 22},
-        {"ze_baiano", "Ze Baiano", "Itapua - Salvador", 0xE69D45, 65, 38, 8},
-        {"jorge", "Jorge Carioca", "Arpoador - Rio", 0x2D938B, 10, 52, 48},
-        {"papai_noel", "Papai Noel", "Oficina de Pinho", 0xC86D51, 68, 22, 14},
-        {"saci", "Saci", "Redemoinho", 0xD95D39, 70, 20, 8},
-        {"emilia", "Emilia", "Boneca Inventora", 0xD86A8E, 65, 18, 36},
+        {"dora", "Dora", "Vila Matilde - SP", 0x3D3929, 0x5A6144, 0x8FA876, 30, 50, 22},
+        {"ze_baiano", "Ze Baiano", "Itapua - Salvador", 0x4E341E, 0x875628, 0xE69D45, 65, 38, 8},
+        {"jorge", "Jorge Carioca", "Arpoador - Rio", 0x263832, 0x295E56, 0x2D938B, 10, 52, 48},
+        {"papai_noel", "Papai Noel", "Oficina de Pinho", 0x492B20, 0x7E4230, 0xC86D51, 68, 22, 14},
+        {"saci", "Saci", "Redemoinho", 0x4D2A1C, 0x8B3E24, 0xD95D39, 70, 20, 8},
+        {"emilia", "Emilia", "Boneca Inventora", 0x4C2B31, 0x884457, 0xD86A8E, 65, 18, 36},
     };
 
     const PresenceTheme* selected = &kThemes[1];  // Ze Baiano default
@@ -403,25 +423,24 @@ void LewayK10Display::ApplyPresenceTheme(const std::string& presence_id) {
         }
     }
 
-    accent_hex_ = selected->accent_hex;
-    lv_color_t accent = lv_color_hex(accent_hex_);
+    accent_hex_ = selected->core_hex;
+    lv_color_t outer_c = lv_color_hex(selected->outer_hex);
+    lv_color_t mid_c = lv_color_hex(selected->mid_hex);
+    lv_color_t core_c = lv_color_hex(selected->core_hex);
 
-    if (header_brand_label_) lv_obj_set_style_text_color(header_brand_label_, accent, 0);
+    if (header_brand_label_) lv_obj_set_style_text_color(header_brand_label_, core_c, 0);
     if (presence_name_label_) lv_label_set_text(presence_name_label_, selected->display_name);
     if (presence_sub_label_) {
         lv_label_set_text(presence_sub_label_, selected->origin_hint);
-        lv_obj_set_style_text_color(presence_sub_label_, accent, 0);
+        lv_obj_set_style_text_color(presence_sub_label_, core_c, 0);
     }
-    if (aura_outer_) {
-        lv_obj_set_style_bg_color(aura_outer_, accent, 0);
-        lv_obj_set_style_border_color(aura_outer_, accent, 0);
-    }
-    if (aura_mid_) lv_obj_set_style_bg_color(aura_mid_, accent, 0);
-    if (aura_core_) lv_obj_set_style_bg_color(aura_core_, accent, 0);
-    if (subtitle_card_) lv_obj_set_style_border_color(subtitle_card_, accent, 0);
-    if (subtitle_role_label_) lv_obj_set_style_text_color(subtitle_role_label_, accent, 0);
+    if (aura_outer_) lv_obj_set_style_bg_color(aura_outer_, outer_c, 0);
+    if (aura_mid_) lv_obj_set_style_bg_color(aura_mid_, mid_c, 0);
+    if (aura_core_) lv_obj_set_style_bg_color(aura_core_, core_c, 0);
+    if (subtitle_card_) lv_obj_set_style_border_color(subtitle_card_, core_c, 0);
+    if (subtitle_role_label_) lv_obj_set_style_text_color(subtitle_role_label_, core_c, 0);
 
-    if (rgb_cb_) {
+    if (update_leds && rgb_cb_) {
         rgb_cb_(selected->led_r, selected->led_g, selected->led_b);
     }
     ESP_LOGI(TAG, "Tema LeWay aplicado: %s (#%06lX)", selected->display_name,
@@ -434,67 +453,67 @@ void LewayK10Display::ApplyMoodGeometry(bool blinking) {
     if (blinking) {
         lv_obj_set_size(eye_left_, 14, 3);
         lv_obj_set_size(eye_right_, 14, 3);
-        lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, 0);
-        lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, 0);
+        lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, 0);
+        lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, 0);
         return;
     }
 
     switch (current_mood_) {
         case VisualMood::Laughing:
         case VisualMood::Happy:
-            lv_obj_set_size(eye_left_, 14, 14);
-            lv_obj_set_size(eye_right_, 14, 14);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, -4);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, -4);
+            lv_obj_set_size(eye_left_, 14, 13);
+            lv_obj_set_size(eye_right_, 14, 13);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, -3);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, -3);
             break;
         case VisualMood::Surprised:
-            lv_obj_set_size(eye_left_, 15, 22);
-            lv_obj_set_size(eye_right_, 15, 22);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, -2);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, -2);
+            lv_obj_set_size(eye_left_, 14, 20);
+            lv_obj_set_size(eye_right_, 14, 20);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, -2);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, -2);
             break;
         case VisualMood::Thinking:
-            lv_obj_set_size(eye_left_, 12, 16);
-            lv_obj_set_size(eye_right_, 12, 11);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -11, -5);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 17, -4);
+            lv_obj_set_size(eye_left_, 12, 15);
+            lv_obj_set_size(eye_right_, 12, 10);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -10, -4);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 16, -3);
             break;
         case VisualMood::Sad:
-            lv_obj_set_size(eye_left_, 12, 10);
-            lv_obj_set_size(eye_right_, 12, 10);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, 4);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, 4);
+            lv_obj_set_size(eye_left_, 12, 9);
+            lv_obj_set_size(eye_right_, 12, 9);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, 4);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, 4);
             break;
         case VisualMood::Sleepy:
             lv_obj_set_size(eye_left_, 14, 5);
             lv_obj_set_size(eye_right_, 14, 5);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, 2);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, 2);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, 2);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, 2);
             break;
         case VisualMood::Loving:
         case VisualMood::Neutral:
         default:
-            lv_obj_set_size(eye_left_, 12, 18);
-            lv_obj_set_size(eye_right_, 12, 18);
-            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -14, -2);
-            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 14, -2);
+            lv_obj_set_size(eye_left_, 12, 16);
+            lv_obj_set_size(eye_right_, 12, 16);
+            lv_obj_align(eye_left_, LV_ALIGN_CENTER, -13, -2);
+            lv_obj_align(eye_right_, LV_ALIGN_CENTER, 13, -2);
             break;
     }
 }
 
-void LewayK10Display::UpdateAuraSizes(int outer_d, int mid_d, int core_d, lv_opa_t outer_opa,
-                                      lv_opa_t mid_opa) {
-    if (aura_outer_) {
+void LewayK10Display::UpdateAuraSizes(int outer_d, int mid_d, int core_d) {
+    if (aura_outer_ && outer_d != last_outer_d_) {
+        last_outer_d_ = outer_d;
         lv_obj_set_size(aura_outer_, outer_d, outer_d);
-        lv_obj_set_style_bg_opa(aura_outer_, outer_opa, 0);
         lv_obj_center(aura_outer_);
     }
-    if (aura_mid_) {
+    if (aura_mid_ && mid_d != last_mid_d_) {
+        last_mid_d_ = mid_d;
         lv_obj_set_size(aura_mid_, mid_d, mid_d);
-        lv_obj_set_style_bg_opa(aura_mid_, mid_opa, 0);
         lv_obj_center(aura_mid_);
     }
-    if (aura_core_) {
+    if (aura_core_ && core_d != last_core_d_) {
+        last_core_d_ = core_d;
         lv_obj_set_size(aura_core_, core_d, core_d);
         lv_obj_center(aura_core_);
     }
@@ -510,36 +529,31 @@ void LewayK10Display::AnimTimerCb(lv_timer_t* timer) {
 void LewayK10Display::TickAnimation() {
     anim_tick_ += 1;
 
-    // Piscar orgânico a cada ~3.5 segundos
+    // Piscar natural a cada ~3.5 a 5 segundos (timer = 250ms -> 14 a 20 ticks)
     if (!is_blinking_ && anim_tick_ >= next_blink_tick_) {
         is_blinking_ = true;
         ApplyMoodGeometry(true);
-    } else if (is_blinking_ && anim_tick_ >= next_blink_tick_ + 3) {
+    } else if (is_blinking_ && anim_tick_ >= next_blink_tick_ + 1) {
         is_blinking_ = false;
-        next_blink_tick_ = anim_tick_ + 55 + (anim_tick_ % 35);
+        next_blink_tick_ = anim_tick_ + 14 + (anim_tick_ % 8);
         ApplyMoodGeometry(false);
     }
 
-    float t = static_cast<float>(anim_tick_) * 0.12f;
+    // Tabela inteira leve (zero float/sin) para pulso suave sem sobrecarregar o barramento SPI
+    static constexpr int kSpeakWave[6] = {0, 8, 16, 10, 4, 12};
+    static constexpr int kListenWave[4] = {0, 6, 10, 6};
+
     if (voice_state_ == VoiceState::Speaking) {
-        // Pulso vivo da Aura enquanto a Presença fala
-        float wave = 0.5f + 0.5f * std::sin(t * 2.6f) * std::cos(t * 0.9f);
-        int outer_d = 128 + static_cast<int>(wave * 24.0f);
-        int mid_d = 100 + static_cast<int>(wave * 16.0f);
-        int core_d = 76 + static_cast<int>(wave * 8.0f);
-        UpdateAuraSizes(outer_d, mid_d, core_d, LV_OPA_30, LV_OPA_50);
+        int delta = kSpeakWave[anim_tick_ % 6];
+        UpdateAuraSizes(128 + delta, 100 + (delta / 2), 74 + (delta / 4));
     } else if (voice_state_ == VoiceState::Listening) {
-        // Respiração atenta e calma enquanto escuta você
-        float breath = 0.5f + 0.5f * std::sin(t * 1.1f);
-        int outer_d = 126 + static_cast<int>(breath * 14.0f);
-        int mid_d = 98 + static_cast<int>(breath * 10.0f);
-        int core_d = 76 + static_cast<int>(breath * 4.0f);
-        UpdateAuraSizes(outer_d, mid_d, core_d, LV_OPA_20, LV_OPA_40);
+        // Atualiza a cada 500ms em escuta
+        if ((anim_tick_ & 1U) == 0) {
+            int delta = kListenWave[(anim_tick_ >> 1) % 4];
+            UpdateAuraSizes(128 + delta, 100 + (delta / 2), 74);
+        }
     } else {
-        // Repouso suave orgânico
-        float rest = 0.5f + 0.5f * std::sin(t * 0.55f);
-        int outer_d = 120 + static_cast<int>(rest * 8.0f);
-        int mid_d = 94 + static_cast<int>(rest * 6.0f);
-        UpdateAuraSizes(outer_d, mid_d, 74, LV_OPA_10, LV_OPA_30);
+        // Em espera: mantém dimensões estáveis (0% CPU/SPI entre piscadas!)
+        UpdateAuraSizes(128, 100, 74);
     }
 }
