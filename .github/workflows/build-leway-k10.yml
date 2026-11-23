@@ -1,0 +1,35 @@
+name: Build LeWay UNIHIKER K10 Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      ota_url:
+        description: 'URL OTA pública do seu servidor LeWay (opcional)'
+        required: false
+        default: ''
+
+jobs:
+  build-leway-k10:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v6.1
+    steps:
+      - name: Checkout fork xiaozhi-esp32
+        uses: actions/checkout@v4
+
+      - name: Build firmware dfrobot/df-k10 com tela LeWay
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.ota_url }}" ]; then
+            echo "CONFIG_OTA_URL=\"${{ github.event.inputs.ota_url }}\"" >> main/boards/dfrobot/df-k10/sdkconfig.defaults || true
+          fi
+          python scripts/release.py dfrobot/df-k10
+
+      - name: Publicar merged-binary.bin pronto para gravar via USB
+        uses: actions/upload-artifact@v4
+        with:
+          name: leway-unihiker-k10-firmware
+          path: |
+            build/merged-binary.bin
+            releases/*.zip
+          if-no-files-found: warn
