@@ -19,6 +19,43 @@
 
 #define TAG "DF-K10-LEWAY"
 
+/**
+ * AbajurCircularStrip — Extensão segura do CircularStrip para Modo Abajur na K10.
+ * Quando lamp_locked_ está ativo, transições de estado (Speaking/Listening/Idle)
+ * NÃO sobrescrevem a cor escolhida pelo usuário, mantendo os 3 LEDs RGB acesos fixos.
+ */
+class AbajurCircularStrip : public CircularStrip {
+private:
+    bool lamp_locked_ = false;
+    StripColor lamp_color_ = {0, 0, 0};
+
+public:
+    using CircularStrip::CircularStrip;
+
+    void SetLampColor(uint8_t r, uint8_t g, uint8_t b) {
+        lamp_locked_ = true;
+        lamp_color_ = {r, g, b};
+        SetAllColor(lamp_color_);
+        ESP_LOGI(TAG, "Modo Abajur travado: RGB(%u,%u,%u)", r, g, b);
+    }
+
+    void ClearLampMode() {
+        lamp_locked_ = false;
+        ESP_LOGI(TAG, "Modo Abajur desativado — voltando ao LED automatico");
+        CircularStrip::OnStateChanged();
+    }
+
+    bool IsLampLocked() const { return lamp_locked_; }
+
+    void OnStateChanged() override {
+        if (lamp_locked_) {
+            SetAllColor(lamp_color_);
+            return;
+        }
+        CircularStrip::OnStateChanged();
+    }
+};
+
 class Df_K10Board : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
@@ -29,7 +66,7 @@ private:
     EspVideo* camera_;
     button_driver_t* btn_a_driver_ = nullptr;
     button_driver_t* btn_b_driver_ = nullptr;
-    CircularStrip* led_strip_;
+    AbajurCircularStrip* led_strip_;
 
     static Df_K10Board* instance_;
 
@@ -212,24 +249,47 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, DISPLAY_BACKLIGHT_OUTPUT_INVERT));
-        ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
-        ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
+#if LEWAY_LANDSCAPE_EYES
+        constexpr int disp_w = DISPLAY_HEIGHT;
+        constexpr int disp_h = DISPLAY_WIDTH;
+        constexpr bool disp_swap_xy = !DISPLAY_SWAP_XY;
+        constexpr bool disp_mirror_x = DISPLAY_MIRROR_X;
+        constexpr bool disp_mirror_y = !DISPLAY_MIRROR_Y;
+#else
+        constexpr int disp_w = DISPLAY_WIDTH;
+        constexpr int disp_h = DISPLAY_HEIGHT;
+        constexpr bool disp_swap_xy = DISPLAY_SWAP_XY;
+        constexpr bool disp_mirror_x = DISPLAY_MIRROR_X;
+        constexpr bool disp_mirror_y = DISPLAY_MIRROR_Y;
+#endif
+        ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, disp_swap_xy));
+        ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, disp_mirror_x, disp_mirror_y));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-        // Tela 100% personalizada LeWay Presença (Aura + Olhos + Legenda Cinema)
+        // Tela 100% personalizada LeWay Presença (Vertical Clássico ou Horizontal Só Olhos)
         display_ = new LewayK10Display(
-            panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-            DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+            panel_io, panel, disp_w, disp_h, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+            disp_mirror_x, disp_mirror_y, disp_swap_xy);
     }
 
     void InitializeIot() {
-        led_strip_ = new CircularStrip(BUILTIN_LED_GPIO, 3);
+        led_strip_ = new AbajurCircularStrip(BUILTIN_LED_GPIO, 3);
         new LedStripControl(led_strip_);
 
         // Sincroniza os 3 LEDs RGB da K10 com a cor assinatura de cada Presença LeWay
+        // e permite travar uma cor fixa (Modo Abajur) imune a mudanças de estado
         if (display_ != nullptr && led_strip_ != nullptr) {
             display_->SetRgbColorCallback([this](uint8_t r, uint8_t g, uint8_t b) {
-                led_strip_->SetAllColor({r, g, b});
+                if (!led_strip_->IsLampLocked()) {
+                    led_strip_->SetAllColor({r, g, b});
+                }
+            });
+            display_->SetLampModeCallback([this](bool enabled, uint8_t r, uint8_t g, uint8_t b) {
+                if (enabled) {
+                    led_strip_->SetLampColor(r, g, b);
+                } else {
+                    led_strip_->ClearLampMode();
+                }
             });
         }
     }
